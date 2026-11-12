@@ -1,0 +1,132 @@
+#!/usr/bin/python3
+"""Import the main branch of project-knowledge into its dedicated SiYuan notebook."""
+import fcntl
+import hashlib
+import json
+
+from pathlib import Path
+import posixpath
+import re
+import sqlite3
+import subprocess
+import time
+from urllib.parse import quote
+
+import requests
+
+ROOT = Path(__file__).resolve().parent
+REPO = Path('/root/project-knowledge')
+WEB = 'https://github.com/dailysergey/project-knowledge'
+STATE = ROOT / 'memory-sync-state'
+STATE.mkdir(mode=0o700, exist_ok=True)
+lock = (STATE / 'lock').open('w')
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+session = requests.Session()
+session.headers['Authorization'] = 'Token ' + json.loads(
+    (ROOT / 'workspace/conf/conf.json').read_text())['api']['token']
+
+
+def api(endpoint, **body):
+    response = session.post('https://notion.sguskov.com/api/' + endpoint, json=body,
+                            timeout=120, allow_redirects=False)
+    response.raise_for_status()
+    reply = response.json()
+    if reply['code']:
+        raise RuntimeError(f"{endpoint}: {reply['msg']}")
+    return reply['data']
+
+
+def git(*args):
+    return subprocess.check_output(['git', '-C', str(REPO), *args])
+
+
+def link(path):
+    return WEB + '/blob/main/' + quote(path, safe='/')
+
+
+def doc_body(filename, blob):
+    body = git('cat-file', 'blob', blob).decode('utf-8-sig')
+    # Keep relative repository links usable from the SiYuan web interface.
+    def absolute(match):
+        dest = match[1]
+        if dest.startswith(('#', '/', '//')) or re.match(r'^[a-zA-Z][\w+.-]*:', dest):
+            return match[0]
+        path, sep, anchor = dest.partition('#')
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(filename), path))
+        return '](' + link(resolved) + sep + anchor + ')'
+    lines = []
+    fence = None
+    for line in body.splitlines(keepends=True):
+        marker = re.match(r'^ {0,3}(`{3,}|~{3,})', line)
+        if marker:
+            if fence is None:
+                fence = marker[1]
+            elif marker[1].startswith(fence):
+                fence = None
+        elif fence is None:
+            line = re.sub(r'\]\(([^\s()]+)\)', absolute, line)
+        lines.append(line)
+    return '[Открыть исходник на GitHub](' + link(filename) + ')\n\n' + ''.join(lines)
+
+
+def apply(filename, version, body, path):
+    row = db.execute('select version, id from docs where path=?', (filename,)).fetchone()
+    if row and row[0] == version:
+        return
+    if row:
+        doc_id = row[1]
+        api('block/updateBlock', id=doc_id, dataType='markdown', data=body())
+    else:
+        ids = api('filetree/getIDsByHPath', notebook=box, path=path)
+        if ids:
+            doc_id = ids[0]
+            api('block/updateBlock', id=doc_id, dataType='markdown', data=body())
+        else:
+            doc_id = api('filetree/createDocWithMd', notebook=box, path=path, markdown=body())
+    with db:
+        db.execute('insert or replace into docs values (?,?,?)', (filename, version, doc_id))
+    # Leave the SiYuan indexer and connected editors time to process bulk writes.
+    time.sleep(1)
+
+
+git('fetch', '--quiet', 'origin', 'main')
+revision = git('rev-parse', 'origin/main').decode().strip()
+entries = git('ls-tree', '-rz', revision).split(b'\0')
+blobs = {}
+for entry in filter(None, entries):
+    info, name = entry.split(b'\t', 1)
+    mode, kind, sha = info.split()
+    if kind == b'blob':
+        blobs[name.decode()] = sha.decode()
+db = sqlite3.connect(STATE / 'sync.sqlite')
+db.execute('create table if not exists docs(path text primary key, version text, id text)')
+box_file = STATE / 'notebook'
+if box_file.exists():
+    box = box_file.read_text().strip()
+else:
+    books = api('notebook/lsNotebooks')['notebooks']
+    box = next((b['id'] for b in books if b['name'] == 'Память'), None)
+    if box is None:
+        box = api('notebook/createNotebook', name='Память')['notebook']['id']
+    box_file.write_text(box)
+files = {k:v for k,v in blobs.items() if k.lower().endswith('.md')}
+others = sorted(blobs.keys() - files.keys())
+index = ('Материалы обновляются из ветки main раз в сутки в 03:00 UTC. Правки для постоянного хранения вносите в '
+         f'[project-knowledge]({WEB}). Папки блокнота повторяют структуру репозитория.\n\n'
+         '## Остальные файлы репозитория\n\n' +
+         '\n'.join(f'- [{p}]({link(p)})' for p in others))
+for name, sha in files.items():
+    # SiYuan limits notebook nesting. Keep deeper source paths in the leaf title.
+    parts = name.split('/')
+    path = '/' + '/'.join(parts[:6] + [' › '.join(parts[6:])]) if len(parts) > 7 else '/' + name
+    apply(name, sha, lambda: doc_body(name, sha), path)
+apply('@index', hashlib.sha256(index.encode()).hexdigest(), lambda: index, '/О репозитории')
+for name, doc_id in db.execute('select path,id from docs').fetchall():
+    if name == '@index' or name in files:
+        continue
+    rows = api('query/sql', stmt=f"select path from blocks where id='{doc_id}' and box='{box}' and type='d'")
+    if rows:
+        api('filetree/removeDoc', notebook=box, path=rows[0]['path'])
+    with db:
+        db.execute('delete from docs where path=?', (name,))
+print(f'{revision[:12]}: {len(files)} Markdown, {len(others)} linked files')

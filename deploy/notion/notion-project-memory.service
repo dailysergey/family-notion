@@ -1,0 +1,10 @@
+[Unit]
+Description=Import project-knowledge into the SiYuan memory notebook
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/notion
+ExecStart=/opt/notion/sync-project-memory
+UMask=0077
+TimeoutStartSec=30min

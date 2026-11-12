@@ -1,0 +1,199 @@
+#!/usr/bin/python3
+"""Connect the shared SiYuan agent through its native ChatGPT plan OAuth flow."""
+import argparse
+from copy import deepcopy
+import getpass
+import json
+import os
+import re
+from pathlib import Path
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+import requests
+
+ROOT = Path(__file__).resolve().parent
+API = 'https://notion.sguskov.com/api/'
+session = requests.Session()
+session.headers['Authorization'] = 'Token ' + json.loads(
+    (ROOT / 'workspace/conf/conf.json').read_text())['api']['token']
+
+
+def api(path, body=None):
+    reply = session.post(API + path, json=body or {}, timeout=130, allow_redirects=False)
+    reply.raise_for_status()
+    result = reply.json()
+    if result['code']:
+        raise RuntimeError(result['msg'])
+    return result['data']
+
+
+def loopback(url):
+    # Only the kernel's own ephemeral listener receives the OAuth response.
+    cid = subprocess.check_output(['docker', 'compose', 'ps', '-q', 'siyuan'], cwd=ROOT, text=True).strip()
+    pid = subprocess.check_output(['docker', 'inspect', '-f', '{{.State.Pid}}', cid], text=True).strip()
+    client = """import http.client, sys, urllib.parse
+u=urllib.parse.urlsplit(sys.stdin.read())
+c=http.client.HTTPConnection('127.0.0.1',u.port,timeout=90)
+c.request('GET',u.path + ('?' + u.query if u.query else ''))
+print(c.getresponse().status)
+"""
+    return subprocess.check_output(['nsenter', '-t', pid, '-n', 'python3', '-c', client],
+                                   input=url, text=True).strip()
+
+
+def validate_callback(callback, target, params, account_id):
+    actual = urlsplit(callback)
+    query = parse_qs(actual.query, keep_blank_values=True)
+    if (actual.scheme, actual.netloc, actual.path) != (target.scheme, target.netloc, target.path) or (
+        actual.fragment or query.get('state') != params['state']):
+        raise RuntimeError('Адрес возврата не соответствует этой попытке входа.')
+    codes = query.get('code', [])
+    clients = query.get('client_id', [account_id])
+    if (len(codes) != 1 or not codes[0] or len(clients) != 1 or
+        not re.fullmatch(r'[A-Za-z0-9_-]+', clients[0]) or
+        (account_id and clients[0] != account_id)):
+        raise RuntimeError('Адрес повреждён. Начните вход заново и вставьте адрес возврата ровно один раз.')
+
+
+def browser_callback(target, params, account_id, login_url):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass  # The request path contains the authorization code.
+
+        def do_GET(self):
+            callback = target.geturl() + '?' + urlsplit(self.path).query
+            try:
+                if urlsplit(self.path).path != target.path:
+                    self.send_error(404)
+                    return
+                validate_callback(callback, target, params, account_id)
+            except (ValueError, RuntimeError):
+                self.send_error(400)
+                return
+            self.server.callback = callback
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'Return to the first terminal to finish signing in.')
+
+    with HTTPServer(('127.0.0.1', 0), Handler) as server:
+        server.callback = None
+        server.timeout = 1
+        print('Во втором окне терминала на Mac выполните команду и оставьте её работать:', flush=True)
+        print(f'ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:{target.port}:127.0.0.1:{server.server_port} root@notion.sguskov.com')
+        print('Затем откройте на этом Mac ссылку для входа в общий агент notion (5 минут):\n' + login_url, flush=True)
+        deadline = time.monotonic() + 300
+        while not server.callback and time.monotonic() < deadline:
+            server.handle_request()
+        if not server.callback:
+            raise RuntimeError('Время входа истекло. Запустите новую попытку.')
+        return server.callback
+
+
+def sign_in(check, account_id='', tunnel=False):
+    attempt = api('ai/chatgpt/start', {'accountID': account_id})
+    try:
+        login = urlsplit(attempt['url'])
+        params = parse_qs(login.query)
+        target = urlsplit(params['redirect_uri'][0])
+        if (login.scheme, login.netloc) != ('https', 'auth.openai.com') or (
+            target.scheme, target.hostname, target.path) != ('http', '127.0.0.1', '/auth/callback') or not target.port:
+            raise RuntimeError('Неожиданный адрес OAuth')
+        if account_id and params.get('client_id') != [account_id]:
+            raise RuntimeError('Несовпадение регистрации ChatGPT.')
+        if check:
+            assert loopback('http://' + target.netloc + '/') == '404'
+            assert api('ai/chatgpt/status', {'id': attempt['id']})['state'] == 'pending'
+            print('OAuth и обратное соединение с контейнером работают.')
+            return
+        # Only the attempt handle is needed to retrieve a failure from the kernel.
+        handle = ROOT / 'agent-account' / '.last-login-attempt'
+        with os.fdopen(os.open(handle, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as stream:
+            stream.write(attempt['id'])
+        if tunnel:
+            callback = browser_callback(target, params, account_id, attempt['url'])
+        else:
+            print('Откройте ссылку на своём устройстве и подтвердите доступ для общего агента notion (5 минут):\n'
+                  + attempt['url'], flush=True)
+            print('После перехода на 127.0.0.1 страница может не открыться. Скопируйте весь адрес из браузера.')
+            callback = getpass.getpass('Вставьте адрес сюда (ввод скрыт): ').strip()
+            validate_callback(callback, target, params, account_id)
+        loopback(callback)
+        result = api('ai/chatgpt/status', {'id': attempt['id']})
+        if result['state'] != 'completed':
+            raise RuntimeError(result.get('error') or 'Авторизация не завершилась.')
+        return result['accountID']
+    finally:
+        api('ai/chatgpt/cancel', {'id': attempt['id']})
+
+
+def configure(account):
+    ai = api('system/getConf')['conf']['ai']
+    existing = next((p for p in ai['providers'] if p.get('authType') == 'chatgpt' and
+                     p.get('accountID') == account), None)
+    provider = deepcopy(existing) if existing else dict(
+        id='chatgpt-' + account, displayName='ChatGPT', authType='chatgpt', accountID=account,
+        baseURL='https://api.openai.com/v1', protocol='openai-responses', requestTimeout=120, models=[])
+    provider['enabled'] = True
+    catalog = api('ai/listModels', {'providerConfig': provider})
+    names = catalog.get('models') or []
+    if not names:
+        raise RuntimeError(catalog.get('msg') or 'Аккаунт не предоставил моделей.')
+    for index, name in enumerate(names, 1):
+        print(index, name)
+    choice = input('Модель для агента [1]: ').strip() or '1'
+    if not choice.isdigit() or not 1 <= int(choice) <= len(names):
+        raise RuntimeError('Неверный номер модели.')
+    name = names[int(choice) - 1]
+    models = list(provider['models'] or [])
+    selected = next((m for m in models if m['name'] == name), None)
+    if selected is None:
+        from uuid import uuid4
+        selected = dict(id=str(uuid4()), name=name)
+        models.append(selected)
+    selected['enabled'] = True
+    provider['models'] = models
+    test = api('ai/testModel', {'providerConfig': provider, 'model': name})
+    if not test.get('matched') or test.get('msg'):
+        raise RuntimeError(test.get('msg') or 'Тестовый запрос не прошёл.')
+    live = api('system/getConf')['conf']['ai']
+    if live != ai:
+        raise RuntimeError('Настройки изменились во время настройки. Повторите команду.')
+    live['providers'] = [p for p in live['providers'] if p['id'] != provider['id']] + [provider]
+    live['agent']['modelId'] = selected['id']
+    api('setting/setAI', live)
+    assert api('system/getConf')['conf']['ai']['agent']['modelId'] == selected['id']
+    print('Агент подключён:', name)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--check', action='store_true')
+    parser.add_argument('--tunnel', action='store_true')
+    args = parser.parse_args()
+    profiles = [p for p in api('ai/chatgpt/accounts')
+                if p.get('connected') or 'http://127.0.0.1:' not in p['id']]
+    if not args.check and not sys.stdin.isatty():
+        sys.exit('Запустите с интерактивным терминалом (ssh -t).')
+    if len(profiles) > 1:
+        if args.check:
+            sign_in(True)
+            sys.exit(0)
+        for i, profile in enumerate(profiles, 1):
+            print(i, profile['id'][-8:])
+        number = input('Выберите ранее зарегистрированный аккаунт: ').strip()
+        if not number.isdigit() or not 1 <= int(number) <= len(profiles):
+            sys.exit('Неверный номер аккаунта.')
+        profile = profiles[int(number) - 1]
+    else:
+        profile = profiles[0] if profiles else {}
+    account = profile.get('id', '')
+    if args.check:
+        sign_in(True, account)
+    else:
+        if not (profile.get('connected') and profile.get('sharing')):
+            account = sign_in(False, account, args.tunnel)
+        configure(account)

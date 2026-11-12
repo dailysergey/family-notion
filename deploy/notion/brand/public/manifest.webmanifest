@@ -1,0 +1,91 @@
+{
+  "name": "notion",
+  "short_name": "notion",
+  "description": "Личное пространство заметок",
+  "lang": "en",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "display_override": [
+    "window-controls-overlay",
+    "fullscreen",
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
+  "categories": [
+    "education",
+    "productivity",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "/notion-brand/note-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/notion-brand/note-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "notion Desktop",
+      "url": "/stage/build/desktop/",
+      "icons": [
+        {
+          "src": "/notion-brand/note-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        },
+        {
+          "src": "/notion-brand/note-512.png",
+          "sizes": "512x512",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "notion Mobile",
+      "url": "/stage/build/mobile/",
+      "icons": [
+        {
+          "src": "/notion-brand/note-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        },
+        {
+          "src": "/notion-brand/note-512.png",
+          "sizes": "512x512",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
+  "related_applications": [
+    {
+      "platform": "windows",
+      "url": "https://apps.microsoft.com/store/detail/siyuan/9P7HPMXP73K4"
+    },
+    {
+      "platform": "play",
+      "url": "https://play.google.com/store/apps/details?id=org.b3log.siyuan",
+      "id": "org.b3log.siyuan"
+    },
+    {
+      "platform": "itunes",
+      "url": "https://itunes.apple.com/app/siyuan/id1583226508"
+    }
+  ],
+  "protocol_handlers": [
+    {
+      "protocol": "web+siyuan",
+      "url": "/?url=%s"
+    }
+  ],
+  "background_color": "#ffffff",
+  "theme_color": "#e6aa74"
+}

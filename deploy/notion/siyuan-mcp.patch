@@ -1,0 +1,17 @@
+diff --git a/src/app.ts b/src/app.ts
+index be6f1f6..6c9b72e 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -64,6 +64,12 @@ export function buildApp(config: Config): FastifyInstance {
+   app.route({
+     method: ["GET", "POST", "DELETE"],
+     url: "/mcp",
++    // Discovery requests can arrive without a JSON body. Challenge before parsing it.
++    onRequest: async (request, reply) => {
++      if (config.auth.mode === "none" || request.headers.authorization) return;
++      authenticator.challenge(reply);
++      return reply.code(401).send({ success: false, error: { code: "UNAUTHORIZED", message: "Authorization required." } });
++    },
+     preHandler: async (request, reply) => {
+       try {
+         const context = await authenticator.authenticate(request);

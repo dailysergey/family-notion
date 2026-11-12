@@ -1,0 +1,88 @@
+{
+  "realm": "siyuan",
+  "enabled": true,
+  "registrationAllowed": false,
+  "bruteForceProtected": true,
+  "sslRequired": "external",
+  "clients": [
+    {
+      "clientId": "siyuan-codex",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "defaultClientScopes": [
+        "siyuan.read",
+        "siyuan.write"
+      ],
+      "protocolMappers": [
+        {
+          "name": "siyuan-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "https://notion.sguskov.com/mcp",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "redirectUris": [
+        "${CODEX_REDIRECT_URI}"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    },
+    {
+      "clientId": "siyuan-chatgpt",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "defaultClientScopes": [
+        "siyuan.read",
+        "siyuan.write"
+      ],
+      "protocolMappers": [
+        {
+          "name": "siyuan-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "https://notion.sguskov.com/mcp",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "redirectUris": [
+        "https://chatgpt.com/connector_platform_oauth_redirect"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "secret": "${CHATGPT_CLIENT_SECRET}",
+      "optionalClientScopes": [
+        "offline_access"
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "siyuan.read",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true"
+      }
+    },
+    {
+      "name": "siyuan.write",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true"
+      }
+    }
+  ],
+  "users": []
+}

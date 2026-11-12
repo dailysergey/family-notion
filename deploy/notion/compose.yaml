@@ -1,0 +1,73 @@
+services:
+  siyuan:
+    image: b3log/siyuan:v3.8.10
+    command: ["serve", "--workspace=/siyuan/workspace"]
+    restart: unless-stopped
+    environment:
+      SIYUAN_ACCESS_AUTH_CODE: ${SIYUAN_ACCESS_AUTH_CODE:?Set access code}
+      PUID: "1000"
+      PGID: "1000"
+    volumes:
+      - ./workspace:/siyuan/workspace
+      - ./agent-account:/home/siyuan/.config/siyuan/chatgpt
+      - ./brand/templates/auth.html:/opt/siyuan/stage/auth.html
+      - ./brand/templates/desktop.html:/opt/siyuan/stage/build/desktop/index.html
+      - ./mobile-fix/index.html:/opt/siyuan/stage/build/mobile/index.html
+      - ./mobile-fix/service-worker.js:/opt/siyuan/stage/service-worker.js
+    networks:
+      - proxy
+
+  notion-mcp:
+    build: ./siyuan-mcp
+    image: local/siyuan-mcp:b685257
+    restart: unless-stopped
+    env_file: mcp.env
+    environment:
+      SIYUAN_BASE_URL: http://siyuan:6806
+      AUTH_MODE: oauth
+      MCP_PUBLIC_URL: https://notion.sguskov.com
+      OAUTH_ISSUER_URL: https://notion.sguskov.com/realms/siyuan
+      OAUTH_AUDIENCE: https://notion.sguskov.com/mcp
+      OAUTH_JWKS_URL: http://notion-id:8080/realms/siyuan/protocol/openid-connect/certs
+    networks: [proxy, identity]
+  notion-id:
+    image: quay.io/keycloak/keycloak:26.8.2
+    command: ["start", "--import-realm"]
+    restart: unless-stopped
+    env_file: mcp-id.env
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://notion-id-db:5432/keycloak
+      KC_HOSTNAME: https://notion.sguskov.com
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HTTP_POOL_MAX_THREADS: "25"
+      JAVA_OPTS_KC_HEAP: "-Xms128m -Xmx384m"
+    volumes:
+      - ./mcp-realm.json:/opt/keycloak/data/import/siyuan.json:ro
+    networks: [proxy, identity]
+    depends_on:
+      notion-id-db:
+        condition: service_healthy
+  notion-id-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file: mcp-db.env
+    volumes:
+      - notion-id-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [identity]
+
+volumes:
+  notion-id-db:
+
+networks:
+  identity:
+    internal: true
+  proxy:
+    external: true
+    name: nginx-proxy-manager_default

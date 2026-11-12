@@ -1,0 +1,8 @@
+.env
+*.env
+agent-account/
+workspace/
+memory-sync-state/
+mcp-access.json
+mcp-realm.json
+siyuan-mcp/
